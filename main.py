@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os
 import requests
 import json
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
@@ -13,6 +14,15 @@ openai.api_key = os.getenv("API_KEY")
 vectara_api_key = os.getenv("VECTARA_API_KEY")
 vectara_corpora_id = os.getenv("VECTARA_CORPUS_ID")
 vectara_customer_id = os.getenv("VECTARA_CUSTOMER_ID")
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # This allows all domains, adjust in production
+    allow_credentials=True,
+    allow_methods=["*"],  # This allows all methods
+    allow_headers=["*"],  # This allows all headers
+)
 
 def query_vectara(question):
     url = "https://api.vectara.io/v1/query"
