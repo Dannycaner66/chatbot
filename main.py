@@ -15,14 +15,27 @@ vectara_api_key = os.getenv("VECTARA_API_KEY")
 vectara_corpora_id = os.getenv("VECTARA_CORPUS_ID")
 vectara_customer_id = os.getenv("VECTARA_CUSTOMER_ID")
 
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # This allows all domains, adjust in production
+    allow_origins=["*"], 
     allow_credentials=True,
-    allow_methods=["*"],  # This allows all methods
-    allow_headers=["*"],  # This allows all headers
+    allow_methods=["*"],  
+    allow_headers=["*"],  
 )
+
+conversation_history = []
+
+def update_conversation_history(role, content):
+    conversation_history.append({"role": role, "content": content})
+    
+    if len(conversation_history) > 20:
+        conversation_history.pop(0)  
+
+def search_in_conversation_history(question):
+    for entry in conversation_history:
+        if question.lower() in entry['content'].lower() and entry['role'] == 'system':
+            return entry['content']
+    return None
 
 def query_vectara(question):
     url = "https://api.vectara.io/v1/query"
@@ -62,18 +75,18 @@ def query_vectara(question):
     
     return None
 
-def optimize_with_gpt(vectara_response, question):
-    conversation_history = [
-        {"role": "system", "content": "You are an AI assistant. Your goal is to understand the user's question and provide a clear, accurate, and concise answer based on the information provided by Vectara."},
-        {"role": "user", "content": f"User's question: {question}"},
-        {"role": "system", "content": f"Vectara provided the following information relevant to the question: {vectara_response}"},
-        {"role": "user", "content": "Please provide a clear and concise answer based on the information from Vectara, ensuring it fully addresses the user's question."}
-    ]
+def optimize_with_gpt(conversation_history, vectara_response, question):
+    update_conversation_history("user", question)
     
+    if vectara_response:
+        update_conversation_history("system", f"Vectara provided the following information: {vectara_response}")
+    else:
+        update_conversation_history("system", "No relevant information found in Vectara. I'll assist you based on previous conversation.")
+
     response = openai.ChatCompletion.create(
         model="gpt-3.5-turbo",
-        messages=conversation_history,
-        temperature=0.1
+        messages=conversation_history, 
+        temperature=0.5  
     )
 
     if response and 'choices' in response:
@@ -81,17 +94,21 @@ def optimize_with_gpt(vectara_response, question):
 
         if choices and len(choices) > 0:
             optimized_response = choices[0]['message']['content']
+            
+            update_conversation_history("system", optimized_response)
+            
             return optimized_response
 
     return "Sorry, something went wrong in optimizing the response."
 
-# FastAPI route to handle the chatbot functionality
 @app.post("/query")
 async def handle_query(question: str):
+    cached_response = search_in_conversation_history(question)
+    if cached_response:
+        return {"answer": cached_response}
+    
     vectara_response = query_vectara(question)
     
-    if vectara_response:
-        optimized_response = optimize_with_gpt(vectara_response, question)
-        return {"answer": optimized_response}
-    else:
-        return {"error": "Vectara did not find relevant information."}
+    optimized_response = optimize_with_gpt(conversation_history, vectara_response, question)
+    
+    return {"answer": optimized_response}
