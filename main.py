@@ -77,7 +77,7 @@ def query_vectara(question: str) -> Optional[str]:
     """
     Query the Vectara API with the given question and return the top result's text.
     """
-    url = f"https://api.vectara.io/v1/query"
+    url = "https://api.vectara.io/v1/query"
     headers = {
         "x-api-key": vectara_api_key,
         "Content-Type": "application/json",
@@ -111,42 +111,53 @@ def query_vectara(question: str) -> Optional[str]:
                 top_result = result['responseSet'][0]['response'][0]
                 vectara_text = top_result.get("text", None)
                 return vectara_text
-            else:
-                return "No results found in Vectara response."
         else:
             return f"Vectara query failed with status code {response.status_code}: {response.text}"
     except Exception as e:
         return f"Exception during Vectara query: {e}"
 
 
-def ingest_pdf_to_vectara(pdf_text: str, document_id: str):
+def optimize_with_gpt(conversation_history: list, question: str, pdf_text: Optional[str] = None):
     """
-    Ingest the extracted text from the PDF into Vectara for indexing.
+    Generate a response using OpenAI's GPT model.
+    Incorporates PDF text if available.
     """
-    url = f"https://api.vectara.io/v1/corpora/{vectara_corpora_id}/documents"
-    headers = {
-        "x-api-key": vectara_api_key,
-        "Content-Type": "application/json",
-        "customer-id": vectara_customer_id
-    }
+    # Add the user's question to the conversation history
+    update_conversation_history("user", question)
 
-    document = {
-        "corpusId": vectara_corpora_id,
-        "documentId": document_id,  # Unique identifier for the document
-        "text": pdf_text,
-        "metadata": {
-            "filename": document_id
+    # Prepare messages to send to OpenAI
+    messages = conversation_history.copy()
+
+    if pdf_text:
+        system_message = {
+            "role": "system",
+            "content": f"Extracted PDF content: {pdf_text[:2000]}"  # Limiting to the first 2000 characters
         }
-    }
+    else:
+        system_message = {
+            "role": "system",
+            "content": "No PDF provided. Proceeding with the user's question."
+        }
+
+    messages.append(system_message)
 
     try:
-        ingest_response = requests.post(url, headers=headers, data=json.dumps(document))
-        if ingest_response.status_code in [200, 201]:
-            return "Successfully ingested PDF content into Vectara."
-        else:
-            return f"Failed to ingest PDF into Vectara: {ingest_response.status_code} {ingest_response.text}"
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            temperature=0.5
+        )
     except Exception as e:
-        return f"Exception during Vectara ingestion: {e}"
+        return f"Error during OpenAI API call: {e}"
+
+    if response and 'choices' in response:
+        choices = response['choices']
+        if choices and len(choices) > 0:
+            optimized_response = choices[0]['message']['content'].strip()
+            update_conversation_history("assistant", optimized_response)
+            return optimized_response
+
+    return "Sorry, I couldn't process your request at the moment."
 
 
 @app.post("/interact")
@@ -198,9 +209,10 @@ async def interact(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to extract text from PDF: {e}")
 
-        # Ingest the extracted PDF text into Vectara
-        vectara_ingestion_response = ingest_pdf_to_vectara(text, unique_filename)
-        return {"message": vectara_ingestion_response}
+        # Pass the extracted PDF text to OpenAI for processing
+        optimized_response = optimize_with_gpt(conversation_history, question or "PDF Uploaded", pdf_text=text)
+
+        return {"answer": optimized_response}
 
     elif question:
         # Determine if the question should be sent to Vectara or OpenAI
@@ -217,38 +229,3 @@ async def interact(
     else:
         # No valid action provided
         raise HTTPException(status_code=400, detail="Invalid request. Provide either a PDF file or a question.")
-
-
-def optimize_with_gpt(conversation_history: list, question: str):
-    """
-    Generate a response using OpenAI's GPT model.
-    """
-    # Add the user's question to the conversation history
-    update_conversation_history("user", question)
-
-    # Prepare messages to send to OpenAI
-    messages = conversation_history.copy()
-
-    system_message = {
-        "role": "system",
-        "content": "Proceeding with the user's question."
-    }
-    messages.append(system_message)
-
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.5
-        )
-    except Exception as e:
-        return f"Error during OpenAI API call: {e}"
-
-    if response and 'choices' in response:
-        choices = response['choices']
-        if choices and len(choices) > 0:
-            optimized_response = choices[0]['message']['content'].strip()
-            update_conversation_history("assistant", optimized_response)
-            return optimized_response
-
-    return "Sorry, I couldn't process your request at the moment."
